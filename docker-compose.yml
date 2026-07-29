@@ -1,0 +1,15 @@
+services:
+  gcal-slack-notifier:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Keep the container clock aligned with TIMEZONE so the cron entry for the
+      # daily digest fires at the hour you expect.
+      TZ: ${TIMEZONE:-UTC}
+      DB_PATH: /app/data/calendar.sqlite3
+    volumes:
+      # python-dotenv reads this; cron jobs do not inherit the container environment
+      - ./.env:/app/.env:ro
+      - ./service_account_credentials.json:/app/service_account_credentials.json:ro
+      - ./data:/app/data
