@@ -79,12 +79,18 @@ $EDITOR .env
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | `service_account_credentials.json` | Path to the JSON key |
 | `DB_PATH` | `calendar.sqlite3` | Local state file |
 | `TIMEZONE` | `UTC` | IANA timezone for formatting and for "today" |
+
 | `LANGUAGE` | `en` | `en` or `ko` |
 | `REMINDER_MINUTES` | `15` | Minutes before start to remind |
 | `ALLDAY_NOTIFY_HOUR` | `9` | Hour (0-23) to announce all-day events |
 
 Calendar ids are under Google Calendar → Settings → *your calendar* →
 *Integrate calendar* → **Calendar ID**.
+
+`TIMEZONE` does not have to match the calendars' own timezone. Reminders compare
+actual instants, so a calendar in `Asia/Seoul` works fine with `TIMEZONE=UTC`. It
+controls how times are printed, which day counts as "today" for the digest, and
+when `ALLDAY_NOTIFY_HOUR` fires.
 
 ### 4a. Run with Docker
 

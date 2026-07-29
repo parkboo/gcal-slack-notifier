@@ -47,12 +47,24 @@ class Config:
         self.db_path = os.environ.get('DB_PATH', 'calendar.sqlite3')
         self.timezone = os.environ.get('TIMEZONE', 'UTC')
         self.language = os.environ.get('LANGUAGE', 'en')
-        self.reminder_minutes = int(os.environ.get('REMINDER_MINUTES', '15'))
-        self.allday_notify_hour = int(os.environ.get('ALLDAY_NOTIFY_HOUR', '9'))
+        self._errors = []
+        self.reminder_minutes = self._int_env('REMINDER_MINUTES', 15)
+        self.allday_notify_hour = self._int_env('ALLDAY_NOTIFY_HOUR', 9)
+
+    # Collect the error instead of raising, so validate() can report everything at once
+    def _int_env(self, name, default):
+        raw = os.environ.get(name)
+        if raw is None or raw == '':
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            self._errors.append(f'{name} must be a number, got {raw!r}')
+            return default
 
     # Fail early with a readable message instead of a stack trace deep in the API client
     def validate(self, need_calendars=True):
-        errors = []
+        errors = list(self._errors)
         if not self.webhook_url:
             errors.append('SLACK_WEBHOOK_URL is not set')
         if need_calendars and not self.calendar_ids:
@@ -157,10 +169,21 @@ class Database:
         cur.execute('SELECT id, summary, start, end, canceled FROM events where id=?', [event_id])
         return cur.fetchone()
 
-    # Used for reminders. Returns the calendar_id the event belongs to.
+    # Used for all-day events, whose start is a bare date with no offset.
     def get_events_with_start_for_notify(self, start):
         cur = self.conn.cursor()
         cur.execute('SELECT id, summary, start, end, calendar_id FROM events where start=? AND canceled IS NULL', [start])
+        return cur.fetchall()
+
+    # Candidates for a timed reminder. Google stores dateTime with the calendar's
+    # own UTC offset, which need not match ours, so the caller compares instants
+    # rather than strings. Filtering by date prefix keeps the idx_start index usable.
+    def get_events_starting_on(self, date_prefixes):
+        cur = self.conn.cursor()
+        where = ' OR '.join(['start LIKE ?'] * len(date_prefixes))
+        cur.execute(f'SELECT id, summary, start, end, calendar_id FROM events '
+                    f'WHERE canceled IS NULL AND ({where})',
+                    [p + '%' for p in date_prefixes])
         return cur.fetchall()
 
     # Only fills rows that have no calendar_id yet. Existing values are left alone.
@@ -506,14 +529,26 @@ class CalendarBot():
         # sharp also look for all-day events starting today.
         tz = self.config.tz()
         current_date = datetime.now(tz)
-        upcoming_date = current_date + timedelta(minutes=self.config.reminder_minutes)
-        # Build yyyy-mm-ddThh:mm:ss+09:00 to match how Google stores the start time
-        time_min = upcoming_date.strftime("%Y-%m-%dT%H:%M:00")
-        timezone_str = upcoming_date.strftime('%z')[:-2] + ':' + upcoming_date.strftime('%z')[-2:]
-        time_min += timezone_str
-        print("time_min: " + time_min)
+        target = (current_date + timedelta(minutes=self.config.reminder_minutes)).replace(second=0, microsecond=0)
+        print("reminder target: " + target.isoformat())
 
-        results = db.get_events_with_start_for_notify(time_min)
+        # An event stored with a different UTC offset can fall on the neighbouring
+        # calendar date, so look at three days and compare the actual instants.
+        prefixes = [(target + timedelta(days=d)).strftime('%Y-%m-%d') for d in (-1, 0, 1)]
+        target_ts = int(target.timestamp())
+        results = []
+        for row in db.get_events_starting_on(prefixes):
+            start = row[2]
+            if len(start) <= 10:
+                continue  # all-day events are handled separately below
+            try:
+                start_dt = datetime.fromisoformat(start)
+            except ValueError:
+                continue
+            if start_dt.tzinfo is None:
+                start_dt = tz.localize(start_dt)
+            if int(start_dt.timestamp()) == target_ts:
+                results.append(row)
 
         if current_date.hour == self.config.allday_notify_hour and current_date.minute == 0:
             results_allday = db.get_events_with_start_for_notify(current_date.strftime("%Y-%m-%d"))
