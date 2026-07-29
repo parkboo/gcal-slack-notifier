@@ -28,10 +28,11 @@ Slack points to it as the successor, and for personal use it does its job: it
 posts your invitations, reminds you about events you are on, and sets your Slack
 status during meetings.
 
-It is built around *your own* calendar, though. For a shared team calendar it can
-post a daily or weekly agenda — on paid plans — but it does not announce
-individual events as they are added, changed or cancelled. That gap is the reason
-this exists.
+The app itself is free. It is built around *your own* calendar, though. For a
+shared team calendar it can post a daily or weekly agenda — and that summary
+requires a paid **Slack workspace** plan — but it does not announce individual
+events as they are added, changed or cancelled. That gap is the reason this
+exists.
 
 *Checked July 2026. If the official app covers this now, please open an issue and
 this section will be corrected.*
