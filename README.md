@@ -1,5 +1,7 @@
 # gcal-slack-notifier
 
+English | [한국어](README.ko.md)
+
 A self-hosted replacement for Slack's discontinued **Google Calendar for Team
 Events** app. Watches shared Google Calendars and posts new, changed and
 cancelled events to a Slack channel, along with reminders before events start.
@@ -119,7 +121,6 @@ $EDITOR .env
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | `service_account_credentials.json` | Path to the JSON key |
 | `DB_PATH` | `calendar.sqlite3` | Local state file |
 | `TIMEZONE` | `UTC` | IANA timezone for formatting and for "today" |
-
 | `LANGUAGE` | `en` | `en` or `ko` |
 | `REMINDER_MINUTES` | `15` | Minutes before start to remind |
 | `ALLDAY_NOTIFY_HOUR` | `9` | Hour (0-23) to announce all-day events |
