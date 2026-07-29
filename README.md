@@ -1,14 +1,26 @@
 # gcal-slack-notifier
 
-Post Google Calendar activity to a Slack channel.
+A self-hosted replacement for Slack's discontinued **Google Calendar for Team
+Events** app. Watches shared Google Calendars and posts new, changed and
+cancelled events to a Slack channel, along with reminders before events start.
 
-Slack's *Google Calendar for Team Events* app was discontinued, and the
-remaining options are either personal-status integrations or paid services with
-per-seat limits. This is a small self-hosted script that covers the shared-team-calendar
-case: watch one or more calendars, and post to a channel when something changes.
+## Who this is for
 
-No hosted service, no account, no per-seat pricing. It runs from cron on your own
-machine and keeps its state in a local SQLite file.
+Teams that run a server and are comfortable creating a Google service account.
+This is a cron script, not a one-click Slack app — there is no *Add to Slack*
+button, and setup involves sharing each calendar with a service account. In
+exchange there is no hosted service, no account, and no per-seat pricing.
+
+If you want an installable app instead, this is not it.
+
+## Why this exists
+
+After Google Calendar for Team Events was deprecated, the remaining options were
+either personal-status integrations (calendar → your own Slack status) or
+freemium services that start charging once a team crosses a usage threshold.
+Neither covers the plain case: a shared team calendar posting into a channel.
+
+This has been running from cron for one team since 2024.
 
 ## What it posts
 
@@ -22,6 +34,19 @@ machine and keeps its state in a local SQLite file.
 | Recurring events, each morning | A single digest listing today's occurrences |
 
 The reminder delay and the morning hour are configurable.
+
+<!--
+TODO: add screenshots. Capture two messages from your own Slack channel — one
+reminder and one recurring digest — save them as docs/reminder.png and
+docs/digest.png, then uncomment the block below. People looking for a
+replacement want to see that it looks like what they lost, and awesome-selfhosted
+style listings generally expect a screenshot.
+
+| Reminder | Daily digest |
+|---|---|
+| ![reminder](docs/reminder.png) | ![digest](docs/digest.png) |
+-->
+
 
 ## Why the recurring digest is separate
 
