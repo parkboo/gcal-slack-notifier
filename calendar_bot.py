@@ -91,8 +91,10 @@ MESSAGES = {
         'allday_pretext': 'All-day event today:',
         'digest_header': "Today's recurring events",
         'weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-        'datetime_format': '%a, %b %-d, %Y %-I:%M %p',
-        'date_format': '%a, %b %-d, %Y',
+        'month_names': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+        'datetime_format': '{weekday}, {month_name} {day}, {year} {hour12}:{minute:02d} {ampm}',
+        'date_format': '{weekday}, {month_name} {day}, {year}',
         'am': 'AM',
         'pm': 'PM',
     },
@@ -103,8 +105,10 @@ MESSAGES = {
         'allday_pretext': '오늘 하루종일 일정입니다:',
         'digest_header': '오늘의 반복일정',
         'weekdays': ['월', '화', '수', '목', '금', '토', '일'],
-        'datetime_format': '%Y년 %-m월 %-d일({weekday}) %p%-I:%M',
-        'date_format': '%Y년 %-m월 %-d일({weekday})',
+        'month_names': ['1월', '2월', '3월', '4월', '5월', '6월',
+                        '7월', '8월', '9월', '10월', '11월', '12월'],
+        'datetime_format': '{year}년 {month}월 {day}일({weekday}) {ampm}{hour12}:{minute:02d}',
+        'date_format': '{year}년 {month}월 {day}일({weekday})',
         'am': '오전',
         'pm': '오후',
     },
@@ -292,18 +296,24 @@ class CalendarBot():
         requests.post(self.config.webhook_url, json=payload)
 
     def toLocalDate(self, d):
-        datetime_obj = datetime.fromisoformat(d)
-        weekday = self.msg['weekdays'][datetime_obj.weekday()]
-
-        # Weekday names come from MESSAGES rather than the C locale, so no
-        # locale needs to be generated on the host.
-        if datetime_obj.time() != datetime.min.time():
-            fmt = self.msg['datetime_format'].replace('{weekday}', weekday)
-            # %p is locale dependent; normalise the English output ourselves
-            return datetime_obj.strftime(fmt).replace("AM", self.msg.get('am', 'AM')).replace("PM", self.msg.get('pm', 'PM'))
-        else:
-            fmt = self.msg['date_format'].replace('{weekday}', weekday)
-            return datetime_obj.strftime(fmt)
+        # str.format rather than strftime: names come from MESSAGES so no system
+        # locale is needed, and there is no dependency on the platform's strftime
+        # extensions ('%-d' is glibc/BSD only, Windows spells it '%#d').
+        dt = datetime.fromisoformat(d)
+        fields = {
+            'year': dt.year,
+            'month': dt.month,
+            'day': dt.day,
+            'weekday': self.msg['weekdays'][dt.weekday()],
+            'month_name': self.msg['month_names'][dt.month - 1],
+            'hour24': dt.hour,
+            'hour12': dt.hour % 12 or 12,
+            'minute': dt.minute,
+            'ampm': self.msg['am'] if dt.hour < 12 else self.msg['pm'],
+        }
+        # A bare date (midnight) is treated as an all-day event, so drop the time
+        key = 'datetime_format' if dt.time() != datetime.min.time() else 'date_format'
+        return self.msg[key].format(**fields)
 
     # Fetch events from Google Calendar using the stored sync token
     def fetch_remote_events(self, service, calendar_id, sync_token, verbose):

@@ -82,8 +82,8 @@ it cannot disturb the main sync loop.
 - Python 3.10+
 - A Google Cloud service account with the Calendar API enabled
 - A Slack incoming webhook
-- Linux or macOS. The date formatting uses `%-d`-style strftime directives, which
-  are not supported on Windows.
+- Linux, macOS or Windows. On Windows use Task Scheduler instead of cron
+  (see below); the Docker setup is Linux-only.
 
 ## Setup
 
@@ -161,6 +161,23 @@ Then add to crontab:
 The per-minute run does change detection and reminders. The morning run posts the
 recurring digest and exits without opening the database, so the two can safely
 start in the same second.
+
+### 4c. Run on Windows
+
+There is no cron, so register two Task Scheduler tasks. From an elevated prompt,
+with `C:\path\to` replaced by wherever you cloned this:
+
+```bat
+schtasks /create /tn "gcal-slack" /sc minute /mo 1 ^
+  /tr "pythonw C:\path\to\calendar_bot.py"
+
+schtasks /create /tn "gcal-slack-digest" /sc daily /st 09:00 ^
+  /tr "pythonw C:\path\to\calendar_bot.py --daily_digest"
+```
+
+`pythonw` keeps a console window from flashing every minute. Task Scheduler has no
+per-minute option older than Windows 7's `/sc minute`; if yours rejects it, create
+a daily task and add a repeat interval of 1 minute in the task's Triggers tab.
 
 ## First run
 

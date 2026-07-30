@@ -69,8 +69,8 @@ freemium 서비스뿐이었습니다. 정작 필요한 것 — 팀 공유 캘린
 - Python 3.10 이상
 - Calendar API가 활성화된 구글 클라우드 서비스 계정
 - 슬랙 incoming webhook
-- 리눅스 또는 macOS. 날짜 포맷에 `%-d` 형태의 strftime 지시자를 쓰는데 윈도우에서는
-  지원하지 않습니다.
+- 리눅스, macOS, 윈도우. 윈도우에서는 cron 대신 작업 스케줄러를 씁니다(아래 참고).
+  Docker 설정은 리눅스 전용입니다.
 
 ## 설치
 
@@ -147,6 +147,22 @@ python calendar_bot.py --dryrun          # 설정 확인용. 아무것도 보내
 
 매분 실행이 변경 감지와 리마인더를 담당합니다. 아침 실행은 반복일정 다이제스트만
 보내고 DB를 열지 않은 채 종료하므로, 두 실행이 같은 초에 시작해도 안전합니다.
+
+### 4c. 윈도우에서 실행
+
+cron이 없으므로 작업 스케줄러에 두 개를 등록합니다. 관리자 권한 프롬프트에서
+`C:\path\to`를 실제 clone 위치로 바꿔서 실행하세요.
+
+```bat
+schtasks /create /tn "gcal-slack" /sc minute /mo 1 ^
+  /tr "pythonw C:\path\to\calendar_bot.py"
+
+schtasks /create /tn "gcal-slack-digest" /sc daily /st 09:00 ^
+  /tr "pythonw C:\path\to\calendar_bot.py --daily_digest"
+```
+
+`pythonw`를 쓰면 매분 콘솔 창이 깜빡이지 않습니다. `/sc minute`을 받지 않는 버전이면
+일간 작업으로 만든 뒤 트리거 탭에서 반복 간격을 1분으로 지정하세요.
 
 ## 첫 실행
 
