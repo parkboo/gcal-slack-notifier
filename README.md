@@ -6,12 +6,16 @@ A self-hosted replacement for Slack's discontinued **Google Calendar for Team
 Events** app. Watches shared Google Calendars and posts new, changed and
 cancelled events to a Slack channel, along with reminders before events start.
 
+> [README.ko.md](README.ko.md) is the source of truth. Where the two disagree,
+> the Korean version is correct.
+
 ## Who this is for
 
-Teams that run a server and are comfortable creating a Google service account.
-This is a cron script, not a one-click Slack app — there is no *Add to Slack*
-button, and setup involves sharing each calendar with a service account. In
-exchange there is no hosted service, no account, and no per-seat pricing.
+Teams that use Google Calendar to manage their schedule, run their own server,
+and are comfortable creating a Google service account. This is a cron script,
+not a one-click Slack app — there is no *Add to Slack* button, and setup
+involves sharing each calendar with a service account. In exchange there is no
+hosted service, no account, and no per-seat pricing.
 
 If you want an installable app instead, this is not it.
 
@@ -26,18 +30,9 @@ This has been running from cron for one team since 2024.
 
 ### What about the official Google Calendar app for Slack?
 
-Slack points to it as the successor, and for personal use it does its job: it
-posts your invitations, reminds you about events you are on, and sets your Slack
-status during meetings.
-
-The app itself is free. It is built around *your own* calendar, though. For a
-shared team calendar it can post a daily or weekly agenda — and that summary
-requires a paid **Slack workspace** plan — but it does not announce individual
-events as they are added, changed or cancelled. That gap is the reason this
-exists.
-
-*Checked July 2026. If the official app covers this now, please open an issue and
-this section will be corrected.*
+Slack points to it as the successor, but it does not notify a channel of your
+choice when events on a shared team calendar are added, changed or cancelled.
+That gap is the reason this exists.
 
 ## What it posts
 
