@@ -478,9 +478,15 @@ class CalendarBot():
                 return self.toLocalDate(start)
 
     def handle_cancelled_event(self, db, remote_event, calendar_id=None):
-        # Guard against a cancellation arriving for an event that is not in the database
+        # A cancellation can arrive for an event this bot never stored: common on the
+        # first run, and for events created and deleted between two syncs. There is
+        # nothing to announce, so this is an ordinary outcome rather than an error.
+        row = db.get_event(remote_event['id'])
+        if row is None:
+            print(f"skipping cancellation of an event that was never stored: {remote_event['id']}")
+            return
+
         try:
-            row = db.get_event(remote_event['id'])
             id, summary, start, end, canceled = row
             msg = self.msg['event_cancelled'].format(summary=summary)
             date = self.get_event_period(start, end)
@@ -502,7 +508,7 @@ class CalendarBot():
                 self.send_message_to_slack(msg, date, url)
             db.mark_event_as_canceled(id)
         except Exception:
-            print("event not found in database")
+            # A real failure now, not the missing-row case handled above
             traceback.print_exc()
 
     def handle_updated_event(self, db, remote_event, calendar_id=None):
