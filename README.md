@@ -42,10 +42,15 @@ That gap is the reason this exists.
 | Event title or date changed | Before → after |
 | Event cancelled | Title and date |
 | 15 minutes before an event starts | Reminder with a local-time stamp |
-| All-day events, each morning | One message per event |
-| Recurring events, each morning | A single digest listing today's occurrences |
+| Each morning | One digest listing today's all-day events and recurring occurrences |
 
-The reminder delay and the morning hour are configurable.
+The reminder delay is configurable; the morning hour is whatever you put in cron.
+
+The morning digest covers all-day events and recurring occurrences because those
+are the only ones no other path reaches: an all-day event has no start time so it
+never matches the reminder, and recurring occurrences are not stored in the
+database (only the master is). A timed one-off event already gets its own
+reminder, so it is left out. A multi-day event is listed on every day it spans.
 
 <!--
 TODO: add screenshots. Capture two messages from your own Slack channel — one
@@ -118,15 +123,13 @@ $EDITOR .env
 | `TIMEZONE` | `UTC` | IANA timezone for formatting and for "today" |
 | `LANGUAGE` | `en` | `en` or `ko` |
 | `REMINDER_MINUTES` | `15` | Minutes before start to remind |
-| `ALLDAY_NOTIFY_HOUR` | `9` | Hour (0-23) to announce all-day events |
 
 Calendar ids are under Google Calendar → Settings → *your calendar* →
 *Integrate calendar* → **Calendar ID**.
 
 `TIMEZONE` does not have to match the calendars' own timezone. Reminders compare
 actual instants, so a calendar in `Asia/Seoul` works fine with `TIMEZONE=UTC`. It
-controls how times are printed, which day counts as "today" for the digest, and
-when `ALLDAY_NOTIFY_HOUR` fires.
+controls how times are printed and which day counts as "today" for the digest.
 
 ### 4a. Run with Docker
 
@@ -136,8 +139,8 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Both cron entries run inside the container. If you change `ALLDAY_NOTIFY_HOUR`,
-change the hour in `docker/crontab` to match.
+Both cron entries run inside the container. To change when the morning digest is
+posted, edit the `0 9` in `docker/crontab`.
 
 ### 4b. Run without Docker
 
@@ -187,7 +190,7 @@ run onward.
 --verbose                 print every event fetched from the API
 --dryrun                  do everything except send Slack messages
 --calendar_id ID          process only this calendar
---daily_digest            post today's recurring events and exit
+--daily_digest            post today's digest and exit
 --backfill_calendar_id    fill calendar_id on rows from an older schema; run once
 ```
 

@@ -2,9 +2,9 @@
 """Google Calendar -> Slack notifier.
 
 Watches one or more Google Calendars and posts to a Slack channel when events
-are created, changed or cancelled. Also posts reminders shortly before an event
-starts, a morning notice for all-day events, and a daily digest of recurring
-events.
+are created, changed or cancelled. Also posts a reminder shortly before an event
+starts, and a single morning digest listing today's all-day events and recurring
+occurrences.
 
 Configuration is read from environment variables. See .env.example.
 """
@@ -49,7 +49,6 @@ class Config:
         self.language = os.environ.get('LANGUAGE', 'en')
         self._errors = []
         self.reminder_minutes = self._int_env('REMINDER_MINUTES', 15)
-        self.allday_notify_hour = self._int_env('ALLDAY_NOTIFY_HOUR', 9)
 
     # Collect the error instead of raising, so validate() can report everything at once
     def _int_env(self, name, default):
@@ -88,8 +87,7 @@ MESSAGES = {
         'event_cancelled': 'Event cancelled: {summary}',
         'event_updated': 'Event updated: {summary}',
         'reminder_pretext': 'Starting in {minutes} minutes:',
-        'allday_pretext': 'All-day event today:',
-        'digest_header': "Today's recurring events",
+        'digest_header': "Today's schedule",
         'weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
         'month_names': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
@@ -102,8 +100,7 @@ MESSAGES = {
         'event_cancelled': '일정 취소: {summary}',
         'event_updated': '일정 변경: {summary}',
         'reminder_pretext': '{minutes}분 후에 일정이 시작됩니다:',
-        'allday_pretext': '오늘 하루종일 일정입니다:',
-        'digest_header': '오늘의 반복일정',
+        'digest_header': '오늘의 일정',
         'weekdays': ['월', '화', '수', '목', '금', '토', '일'],
         'month_names': ['1월', '2월', '3월', '4월', '5월', '6월',
                         '7월', '8월', '9월', '10월', '11월', '12월'],
@@ -172,12 +169,6 @@ class Database:
         cur = self.conn.cursor()
         cur.execute('SELECT id, summary, start, end, canceled FROM events where id=?', [event_id])
         return cur.fetchone()
-
-    # Used for all-day events, whose start is a bare date with no offset.
-    def get_events_with_start_for_notify(self, start):
-        cur = self.conn.cursor()
-        cur.execute('SELECT id, summary, start, end, calendar_id FROM events where start=? AND canceled IS NULL', [start])
-        return cur.fetchall()
 
     # Candidates for a timed reminder. Google stores dateTime with the calendar's
     # own UTC offset, which need not match ours, so the caller compares instants
@@ -396,17 +387,26 @@ class CalendarBot():
         db.commit()
         print(f"filled {total} total, {db.count_events_without_calendar_id()} events still without calendar_id")
 
-    # Post today's recurring events as one digest (run from a morning cron)
-    def notify_todays_recurring_events(self, service, calendar_ids):
+    # Post today's events as a single digest (run from a morning cron).
+    #
+    # Covers all-day events and recurring occurrences, because those are exactly
+    # the events no other path reaches: an all-day event's start is a bare date so
+    # it never matches the timed reminder, and recurring occurrences are not in the
+    # database at all (only the master is). A timed one-off event already gets its
+    # own reminder, so including it here would notify twice.
+    def notify_todays_events(self, service, calendar_ids):
         rows = []
         for calendar_id in calendar_ids:
             print(f'calendar_id={calendar_id}')
             for event in self.fetch_today_events(service, calendar_id):
                 if event.get('status') == 'cancelled':
                     continue
+                # All-day events carry start.date, timed events start.dateTime
+                is_allday = 'date' in event.get('start', {})
                 # Only instances of a recurring series carry recurringEventId.
                 # Individually modified instances carry it too, so they are included.
-                if 'recurringEventId' not in event:
+                is_recurring = 'recurringEventId' in event
+                if not is_allday and not is_recurring:
                     continue
                 try:
                     start = event['start'].get('dateTime', event['start'].get('date'))
@@ -423,9 +423,10 @@ class CalendarBot():
                 ))
 
         if not rows:
-            print("no recurring events today")
+            print("nothing to post today")
             return
 
+        # Plain string sort puts all-day events (bare dates) above timed ones
         rows.sort(key=lambda r: r[0])
         lines = [f"• *<{url}|{summary}>* {period}" for _, summary, period, url in rows]
         fallback = [f"• {summary} {period}" for _, summary, period, _ in rows]
@@ -535,8 +536,8 @@ class CalendarBot():
     # NOTE: this queries the whole database, not one calendar. Calling it inside
     # the calendar loop sends one duplicate notification per configured calendar.
     def search_upcoming_events(self, db):
-        # Find events starting REMINDER_MINUTES from now, and at ALLDAY_NOTIFY_HOUR
-        # sharp also look for all-day events starting today.
+        # Find events starting REMINDER_MINUTES from now. All-day events are the
+        # morning digest's job (--daily_digest), not this one.
         tz = self.config.tz()
         current_date = datetime.now(tz)
         target = (current_date + timedelta(minutes=self.config.reminder_minutes)).replace(second=0, microsecond=0)
@@ -550,7 +551,7 @@ class CalendarBot():
         for row in db.get_events_starting_on(prefixes):
             start = row[2]
             if len(start) <= 10:
-                continue  # all-day events are handled separately below
+                continue  # all-day event; the morning digest covers those
             try:
                 start_dt = datetime.fromisoformat(start)
             except ValueError:
@@ -559,17 +560,6 @@ class CalendarBot():
                 start_dt = tz.localize(start_dt)
             if int(start_dt.timestamp()) == target_ts:
                 results.append(row)
-
-        if current_date.hour == self.config.allday_notify_hour and current_date.minute == 0:
-            results_allday = db.get_events_with_start_for_notify(current_date.strftime("%Y-%m-%d"))
-            for row in results_allday:
-                id, summary, start, end, calendar_id = row
-                print(f"all-day event: {summary} {self.get_event_period(start, end)}")
-                if not self.dryrun:
-                    # All-day events have no time, so pass the period text instead of ts
-                    self.send_upcoming_events_to_slack(summary, id, calendar_id,
-                                                       text=self.get_event_period(start, end),
-                                                       pretext=self.msg['allday_pretext'])
 
         for row in results:
             id, summary, start, end, calendar_id = row
@@ -605,7 +595,7 @@ def main():
     # This reads Google directly and needs no database, so it does not contend with the
     # per-minute cron for the SQLite lock when both start in the same second.
     if args.daily_digest:
-        bot.notify_todays_recurring_events(service, calendar_ids)
+        bot.notify_todays_events(service, calendar_ids)
         return
 
     db = Database(config.db_path)

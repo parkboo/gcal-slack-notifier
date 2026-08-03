@@ -5,5 +5,5 @@ SHELL=/bin/sh
 
 # Detect new/changed/cancelled events and send reminders
 * * * * * cd /app && python calendar_bot.py >> /proc/1/fd/1 2>&1
-# Post today's recurring events. Keep this hour in sync with ALLDAY_NOTIFY_HOUR.
+# Post today's digest (all-day events and recurring occurrences).
 0 9 * * * cd /app && python calendar_bot.py --daily_digest >> /proc/1/fd/1 2>&1
