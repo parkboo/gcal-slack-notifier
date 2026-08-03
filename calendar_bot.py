@@ -17,6 +17,7 @@ import argparse
 import os
 import pytz
 import base64
+import re
 import traceback
 
 script_path = os.path.abspath(__file__)
@@ -133,13 +134,14 @@ class Database:
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_start ON events (start);')
         self.conn.execute('CREATE TABLE IF NOT EXISTS sync_tokens (calendar_id TEXT PRIMARY KEY, token TEXT);')
 
-        # Databases created before calendar_id existed need the column added.
-        # CREATE TABLE IF NOT EXISTS will not add it, so check and migrate.
+        # Databases created before these columns existed need them added.
+        # CREATE TABLE IF NOT EXISTS will not add them, so check and migrate.
         cur = self.conn.cursor()
         columns = [row[1] for row in cur.execute('PRAGMA table_info(events)').fetchall()]
-        if 'calendar_id' not in columns:
-            self.conn.execute('ALTER TABLE events ADD COLUMN calendar_id TEXT;')
-            self.conn.commit()
+        for col in ('calendar_id', 'location'):
+            if col not in columns:
+                self.conn.execute(f'ALTER TABLE events ADD COLUMN {col} TEXT;')
+        self.conn.commit()
 
     def save_sync_token(self, calendar_id, token):
         cur = self.conn.cursor()
@@ -158,11 +160,11 @@ class Database:
         cur.execute('SELECT COUNT(*) FROM events')
         return cur.fetchone()[0]
 
-    def update_event(self, event_id, summary, start, end, calendar_id=None):
-        self.conn.execute('UPDATE events SET summary=?, start=?, end=?, calendar_id=? WHERE id=?', (summary, start, end, calendar_id, event_id))
+    def update_event(self, event_id, summary, start, end, calendar_id=None, location=None):
+        self.conn.execute('UPDATE events SET summary=?, start=?, end=?, calendar_id=?, location=? WHERE id=?', (summary, start, end, calendar_id, location, event_id))
 
-    def insert_event(self, event_id, summary, start, end, calendar_id=None):
-        self.conn.execute('INSERT OR IGNORE INTO events (id, summary, start, end, calendar_id) VALUES (?, ?, ?, ?, ?)', (event_id, summary, start, end, calendar_id))
+    def insert_event(self, event_id, summary, start, end, calendar_id=None, location=None):
+        self.conn.execute('INSERT OR IGNORE INTO events (id, summary, start, end, calendar_id, location) VALUES (?, ?, ?, ?, ?, ?)', (event_id, summary, start, end, calendar_id, location))
 
     # Columns are listed explicitly. SELECT * breaks callers whenever a column is added.
     def get_event(self, event_id):
@@ -176,7 +178,7 @@ class Database:
     def get_events_starting_on(self, date_prefixes):
         cur = self.conn.cursor()
         where = ' OR '.join(['start LIKE ?'] * len(date_prefixes))
-        cur.execute(f'SELECT id, summary, start, end, calendar_id FROM events '
+        cur.execute(f'SELECT id, summary, start, end, calendar_id, location FROM events '
                     f'WHERE canceled IS NULL AND ({where})',
                     [p + '%' for p in date_prefixes])
         return cur.fetchall()
@@ -218,18 +220,32 @@ class CalendarBot():
         event_url = f"https://www.google.com/calendar/event?eid={eid}"
         return event_url
 
-    def send_message_to_slack(self, msg, date=None, url=None):
+    # Suffix for the location, empty when there is none.
+    # for_push strips URLs: people sometimes put a meeting link in the location
+    # field, and a raw URL in the push-notification fallback is what commits
+    # 0182fb3 / 1797dfd set out to avoid.
+    def format_location(self, location, for_push=False):
+        if not location:
+            return ""
+        loc = location.strip()
+        if for_push:
+            loc = re.sub(r'https?://\S+', '', loc).strip(' -|,')
+        if not loc:
+            return ""
+        return f" 📍{loc}"
+
+    def send_message_to_slack(self, msg, date=None, url=None, location=None):
         if url is not None:
             # A rich_text link element serialises to "URL (text)" in push notification
             # fallbacks, exposing the raw URL. mrkdwn `<URL|text>` shows only the text.
             payload = {
-                    "text": f"{msg} {date}",
+                    "text": f"{msg} {date}{self.format_location(location, for_push=True)}",
                     "blocks": [
                         {
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*<{url}|{msg}>* {date}"
+                                "text": f"*<{url}|{msg}>* {date}{self.format_location(location)}"
                             }
                         }
                     ]
@@ -241,7 +257,7 @@ class CalendarBot():
             requests.post(self.config.webhook_url, json=payload)
 
     def send_upcoming_events_to_slack(self, title, id, calendar_id, ts=None, text=None,
-                                      pretext=None):
+                                      pretext=None, location=None):
         if pretext is None:
             pretext = self.msg['reminder_pretext'].format(minutes=self.config.reminder_minutes)
 
@@ -252,6 +268,7 @@ class CalendarBot():
         if text is None:
             # All-day events have no time, so callers pass text instead of ts
             text = f"<!date^{ts}" + "^{date_num} {time_secs}| >" if ts is not None else ""
+        text += self.format_location(location)
 
         attachment = {
             "pretext": pretext,
@@ -420,6 +437,7 @@ class CalendarBot():
                     self.get_event_period(start, end),
                     # Use the htmlLink the API returns; it points at the specific instance
                     event.get('htmlLink') or self.get_event_url(event['id'], calendar_id),
+                    event.get('location'),
                 ))
 
         if not rows:
@@ -428,8 +446,10 @@ class CalendarBot():
 
         # Plain string sort puts all-day events (bare dates) above timed ones
         rows.sort(key=lambda r: r[0])
-        lines = [f"• *<{url}|{summary}>* {period}" for _, summary, period, url in rows]
-        fallback = [f"• {summary} {period}" for _, summary, period, _ in rows]
+        lines = [f"• *<{url}|{summary}>* {period}{self.format_location(loc)}"
+                 for _, summary, period, url, loc in rows]
+        fallback = [f"• {summary} {period}{self.format_location(loc, for_push=True)}"
+                    for _, summary, period, _, loc in rows]
         for line in fallback:
             print(line)
 
@@ -500,7 +520,8 @@ class CalendarBot():
             remote_summary = remote_event.get('summary', 'No Title').strip()
             msg = self.msg['event_updated'].format(summary=summary)
             date = f"{self.get_event_period(start, end)} → {remote_summary} {self.get_event_period(remote_start, remote_end)}"
-            db.update_event(id, remote_summary, remote_start, remote_end, calendar_id)
+            location = remote_event.get('location')
+            db.update_event(id, remote_summary, remote_start, remote_end, calendar_id, location)
 
             # Ignore changes to anything other than the title or the dates
             if summary == remote_summary and start == remote_start and end == remote_end:
@@ -512,7 +533,7 @@ class CalendarBot():
                 url = self.get_event_url(id, calendar_id)
                 print(url)
             if not self.dryrun:
-                self.send_message_to_slack(msg, date, url)
+                self.send_message_to_slack(msg, date, url, location)
         except Exception:
             pass
 
@@ -521,7 +542,8 @@ class CalendarBot():
         remote_summary = remote_event.get('summary', 'No Title').strip()
         remote_start = remote_event['start'].get('dateTime', remote_event['start'].get('date'))
         remote_end = remote_event['end'].get('dateTime', remote_event['end'].get('date'))
-        db.insert_event(id, remote_summary, remote_start, remote_end, calendar_id)
+        location = remote_event.get('location')
+        db.insert_event(id, remote_summary, remote_start, remote_end, calendar_id, location)
 
         msg = f"{remote_summary}"
         date = f"{self.get_event_period(remote_start, remote_end)}"
@@ -531,7 +553,7 @@ class CalendarBot():
             url = self.get_event_url(id, calendar_id)
             print(url)
         if not self.dryrun:
-            self.send_message_to_slack(msg, date, url)
+            self.send_message_to_slack(msg, date, url, location)
 
     # NOTE: this queries the whole database, not one calendar. Calling it inside
     # the calendar loop sends one duplicate notification per configured calendar.
@@ -562,11 +584,11 @@ class CalendarBot():
                 results.append(row)
 
         for row in results:
-            id, summary, start, end, calendar_id = row
-            print(f"upcoming event: {summary} {self.get_event_period(start, end)}")
+            id, summary, start, end, calendar_id, location = row
+            print(f"upcoming event: {summary} {self.get_event_period(start, end)}{self.format_location(location)}")
             if not self.dryrun:
                 ts = int(datetime.fromisoformat(start).timestamp())
-                self.send_upcoming_events_to_slack(summary, id, calendar_id, ts)
+                self.send_upcoming_events_to_slack(summary, id, calendar_id, ts, location=location)
 
 
 def main():

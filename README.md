@@ -38,7 +38,7 @@ That gap is the reason this exists.
 
 | Trigger | Message |
 |---|---|
-| Event created | Title and date, linked to the event |
+| Event created | Title and date, linked to the event (with location if set) |
 | Event title or date changed | Before → after |
 | Event cancelled | Title and date |
 | 15 minutes before an event starts | Reminder with a local-time stamp |
@@ -51,6 +51,11 @@ are the only ones no other path reaches: an all-day event has no start time so i
 never matches the reminder, and recurring occurrences are not stored in the
 database (only the master is). A timed one-off event already gets its own
 reminder, so it is left out. A multi-day event is listed on every day it spans.
+
+An event's location is shown after 📍 when set. If the location holds a meeting
+link, the channel message keeps it but the push notification strips the URL. A
+location-only change is not announced: people often append the attendee list to
+the room name, which would otherwise post on every guest-list edit.
 
 <!--
 TODO: add screenshots. Capture two messages from your own Slack channel — one
