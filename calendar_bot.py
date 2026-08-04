@@ -300,22 +300,31 @@ class CalendarBot():
         if self.verbose:
             print(f"{pretext} {title} {event_url}")
 
+    # A section block's text tops out at 3000 characters. Past that Slack rejects
+    # the whole message as invalid_blocks — reachable around 20 events — so split.
+    SECTION_LIMIT = 2900
+
+    def split_into_sections(self, header, lines):
+        chunks = [f"*{header}*"]
+        for line in lines:
+            # A single line over the limit is left alone; no event title is that long
+            if len(chunks[-1]) + 1 + len(line) > self.SECTION_LIMIT:
+                chunks.append(line)
+            else:
+                chunks[-1] += "\n" + line
+        return [{"type": "section", "text": {"type": "mrkdwn", "text": c}} for c in chunks]
+
     def send_daily_digest_to_slack(self, header, lines, fallback):
         # Post several events as a single message
         payload = {
             "text": f"{header}\n" + "\n".join(fallback),  # plain text so push notifications do not expose URLs
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*{header}*\n" + "\n".join(lines)
-                    }
-                }
-            ]
+            "blocks": self.split_into_sections(header, lines),
         }
         print(payload)
-        requests.post(self.config.webhook_url, json=payload)
+        res = requests.post(self.config.webhook_url, json=payload)
+        # This message goes out once a day, so a silent failure is easy to miss
+        if res.status_code != 200:
+            print(f"digest failed to send: {res.status_code} {res.text}")
 
     def toLocalDate(self, d):
         # str.format rather than strftime: names come from MESSAGES so no system
@@ -695,7 +704,7 @@ def main():
 
     calendar_ids = [args.calendar_id] if args.calendar_id else config.calendar_ids
 
-    # Morning cron: post today's recurring events and exit without touching sync tokens.
+    # Morning cron: post today's schedule and exit without touching sync tokens.
     # This reads Google directly and needs no database, so it does not contend with the
     # per-minute cron for the SQLite lock when both start in the same second.
     if args.daily_digest:
