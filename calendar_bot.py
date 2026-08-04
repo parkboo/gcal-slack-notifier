@@ -3,14 +3,13 @@
 
 Watches one or more Google Calendars and posts to a Slack channel when events
 are created, changed or cancelled. Also posts a reminder shortly before an event
-starts, and a single morning digest listing today's all-day events and recurring
-occurrences.
+starts, and a single morning digest listing everything on today's schedule.
 
 Configuration is read from environment variables. See .env.example.
 """
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import requests
 import sqlite3
 import argparse
@@ -94,6 +93,14 @@ MESSAGES = {
                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
         'datetime_format': '{weekday}, {month_name} {day}, {year} {hour12}:{minute:02d} {ampm}',
         'date_format': '{weekday}, {month_name} {day}, {year}',
+        # Used only by the digest, where the date is already in the header
+        'digest_header_format': '{header} — {month_name} {day} ({weekday})',
+        'time_format': '{hour12}:{minute:02d} {ampm}',
+        'monthday_format': '{month_name} {day}',
+        'digest_allday': 'All-day',
+        'yesterday': 'Yesterday',
+        'today': 'Today',
+        'tomorrow': 'Tomorrow',
         'am': 'AM',
         'pm': 'PM',
     },
@@ -107,6 +114,13 @@ MESSAGES = {
                         '7월', '8월', '9월', '10월', '11월', '12월'],
         'datetime_format': '{year}년 {month}월 {day}일({weekday}) {ampm}{hour12}:{minute:02d}',
         'date_format': '{year}년 {month}월 {day}일({weekday})',
+        'digest_header_format': '{header} · {month}월 {day}일({weekday})',
+        'time_format': '{ampm} {hour12}:{minute:02d}',
+        'monthday_format': '{month}월 {day}일',
+        'digest_allday': '하루종일',
+        'yesterday': '어제',
+        'today': '오늘',
+        'tomorrow': '내일',
         'am': '오전',
         'pm': '오후',
     },
@@ -404,37 +418,92 @@ class CalendarBot():
         db.commit()
         print(f"filled {total} total, {db.count_events_without_calendar_id()} events still without calendar_id")
 
+    # Python 3.10's fromisoformat cannot read the trailing 'Z' of a UTC timestamp
+    def parse_datetime(self, s):
+        return datetime.fromisoformat(s.replace('Z', '+00:00'))
+
+    # Clock time for a digest line, e.g. "10:30 AM"
+    def format_clock(self, dt):
+        return self.msg['time_format'].format(
+            hour12=dt.hour % 12 or 12,
+            minute=dt.minute,
+            ampm=self.msg['am'] if dt.hour < 12 else self.msg['pm'],
+        )
+
+    # A day relative to today, falling back to a bare month/day beyond one day out
+    def format_day_label(self, d, today):
+        delta = (d - today).days
+        if delta in (-1, 0, 1):
+            return self.msg[{-1: 'yesterday', 0: 'today', 1: 'tomorrow'}[delta]]
+        return self.msg['monthday_format'].format(
+            month=d.month, day=d.day, month_name=self.msg['month_names'][d.month - 1])
+
+    # The leading column of a digest line. The date is already in the header, so
+    # this shows only a clock range or a relative-day span.
+    # Also returns a sort key: (is_allday, start, end).
+    def format_digest_period(self, start, end, today, tz):
+        # An all-day event's start is a bare date (2026-08-04)
+        if len(start) <= 10:
+            start_date = date.fromisoformat(start)
+            # all-day end.date is the day *after* the last day, so step back one
+            end_date = date.fromisoformat(end) - timedelta(days=1) if end else start_date
+            if end_date < start_date:
+                end_date = start_date
+            if start_date == end_date:
+                # No point rendering a single day as "Today-Today"
+                period = (self.msg['digest_allday'] if start_date == today
+                          else self.format_day_label(start_date, today))
+            else:
+                period = (f"{self.format_day_label(start_date, today)}"
+                          f"-{self.format_day_label(end_date, today)}")
+            return period, (True, start_date, end_date)
+
+        # dateTime carries the calendar's own offset, which need not match TIMEZONE
+        start_dt = self.parse_datetime(start).astimezone(tz)
+        end_dt = self.parse_datetime(end).astimezone(tz) if end else None
+
+        # Name the day whenever an endpoint falls outside today, so an event
+        # running past midnight is not mistaken for one ending this evening.
+        # The end is compared against the start, so a day is never named twice.
+        def clock(dt, same_as):
+            if dt.date() == same_as:
+                return self.format_clock(dt)
+            return f"{self.format_day_label(dt.date(), today)} {self.format_clock(dt)}"
+
+        if end_dt is None:
+            return clock(start_dt, today), (False, start_dt, start_dt)
+        period = f"{clock(start_dt, today)}-{clock(end_dt, start_dt.date())}"
+        return period, (False, start_dt, end_dt)
+
     # Post today's events as a single digest (run from a morning cron).
     #
-    # Covers all-day events and recurring occurrences, because those are exactly
-    # the events no other path reaches: an all-day event's start is a bare date so
-    # it never matches the timed reminder, and recurring occurrences are not in the
-    # database at all (only the master is). A timed one-off event already gets its
-    # own reminder, so including it here would notify twice.
+    # Every event overlapping today is included, whatever its kind. This is the
+    # start-of-day overview, so overlapping with the timed reminder is intended:
+    # an event shows up once in the morning and again just before it starts.
+    #
+    # Incremental sync returns a recurring series as a single master event, so the
+    # database cannot name the individual occurrences. That is why this queries
+    # Google directly with singleEvents=True instead of reading the database.
     def notify_todays_events(self, service, calendar_ids):
+        tz = self.config.tz()
+        today = datetime.now(tz).date()
+
         rows = []
         for calendar_id in calendar_ids:
             print(f'calendar_id={calendar_id}')
             for event in self.fetch_today_events(service, calendar_id):
                 if event.get('status') == 'cancelled':
                     continue
-                # All-day events carry start.date, timed events start.dateTime
-                is_allday = 'date' in event.get('start', {})
-                # Only instances of a recurring series carry recurringEventId.
-                # Individually modified instances carry it too, so they are included.
-                is_recurring = 'recurringEventId' in event
-                if not is_allday and not is_recurring:
+                start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date'))
+                end = event.get('end', {}).get('dateTime', event.get('end', {}).get('date'))
+                if not start:
+                    print("event without start")
                     continue
-                try:
-                    start = event['start'].get('dateTime', event['start'].get('date'))
-                    end = event['end'].get('dateTime', event['end'].get('date'))
-                except KeyError:
-                    print("event without start/end")
-                    continue
+                period, sort_key = self.format_digest_period(start, end, today, tz)
                 rows.append((
-                    start,
+                    sort_key,
                     event.get('summary', 'No Title').strip(),
-                    self.get_event_period(start, end),
+                    period,
                     # Use the htmlLink the API returns; it points at the specific instance
                     event.get('htmlLink') or self.get_event_url(event['id'], calendar_id),
                     event.get('location'),
@@ -444,17 +513,24 @@ class CalendarBot():
             print("nothing to post today")
             return
 
-        # Plain string sort puts all-day events (bare dates) above timed ones
+        # Timed events first in clock order, all-day events after them
         rows.sort(key=lambda r: r[0])
-        lines = [f"• *<{url}|{summary}>* {period}{self.format_location(loc)}"
+        lines = [f"• *{period}* <{url}|{summary}>{self.format_location(loc)}"
                  for _, summary, period, url, loc in rows]
-        fallback = [f"• {summary} {period}{self.format_location(loc, for_push=True)}"
+        fallback = [f"• {period} {summary}{self.format_location(loc, for_push=True)}"
                     for _, summary, period, _, loc in rows]
+
+        header = self.msg['digest_header_format'].format(
+            header=self.msg['digest_header'],
+            month=today.month, day=today.day,
+            month_name=self.msg['month_names'][today.month - 1],
+            weekday=self.msg['weekdays'][today.weekday()])
+        print(header)
         for line in fallback:
             print(line)
 
         if not self.dryrun:
-            self.send_daily_digest_to_slack(self.msg['digest_header'], lines, fallback)
+            self.send_daily_digest_to_slack(header, lines, fallback)
 
     # Format an event period. Shows only the start when start and end are the same day.
     def get_event_period(self, start, end):
@@ -602,7 +678,7 @@ def main():
     parser.add_argument("--verbose", help="increase output verbosity", action="store_true")
     parser.add_argument("--dryrun", help="for test (not sending slack messages)", action="store_true")
     parser.add_argument("--calendar_id", help="process only this calendar id", type=str, default="", required=False)
-    parser.add_argument("--daily_digest", help="notify today's recurring events and exit (for the morning cron)", action="store_true")
+    parser.add_argument("--daily_digest", help="notify today's schedule and exit (for the morning cron)", action="store_true")
     parser.add_argument("--backfill_calendar_id", help="fill calendar_id of existing events and exit (run once, sends nothing)", action="store_true")
     args = parser.parse_args()
 

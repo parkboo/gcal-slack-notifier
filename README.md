@@ -42,15 +42,20 @@ That gap is the reason this exists.
 | Event title or date changed | Before → after |
 | Event cancelled | Title and date |
 | 15 minutes before an event starts | Reminder with a local-time stamp |
-| Each morning | One digest listing today's all-day events and recurring occurrences |
+| Each morning | One digest listing everything on today's schedule |
 
 The reminder delay is configurable; the morning hour is whatever you put in cron.
 
-The morning digest covers all-day events and recurring occurrences because those
-are the only ones no other path reaches: an all-day event has no start time so it
-never matches the reminder, and recurring occurrences are not stored in the
-database (only the master is). A timed one-off event already gets its own
-reminder, so it is left out. A multi-day event is listed on every day it spans.
+The morning digest covers every event overlapping today, whatever its kind. It is
+the start-of-day overview, so overlapping with the reminder is intended: an event
+shows up once in the morning and again just before it starts.
+
+The date appears once in the header, so each line shows only a time
+(`2:00 PM-3:00 PM`). A multi-day event is labelled relative to today
+(`Yesterday-Tomorrow`), falling back to plain dates beyond one day out
+(`Jul 30-Aug 8`). An all-day event confined to today reads `All-day`. Timed
+events come first in clock order, all-day events after them. A multi-day event is
+listed on every day it spans.
 
 An event's location is shown after 📍 when set. If the location holds a meeting
 link, the channel message keeps it but the push notification strips the URL. A
@@ -59,7 +64,7 @@ the room name, which would otherwise post on every guest-list edit.
 
 <!--
 TODO: add screenshots. Capture two messages from your own Slack channel — one
-reminder and one recurring digest — save them as docs/reminder.png and
+reminder and one morning digest — save them as docs/reminder.png and
 docs/digest.png, then uncomment the block below. People looking for a
 replacement want to see that it looks like what they lost, and awesome-selfhosted
 style listings generally expect a screenshot.
@@ -70,17 +75,16 @@ style listings generally expect a screenshot.
 -->
 
 
-## Why the recurring digest is separate
+## Why the morning run asks Google instead of the database
 
 Incremental sync (`syncToken`) returns a recurring series as a **single master
 event**, not as individual occurrences. A weekly meeting therefore appears once,
-on the date the series started, and never again — so per-occurrence reminders are
-impossible from the sync data alone.
+on the date the series started, and never again — so the database alone cannot say
+which occurrence falls on today.
 
-The `--daily_digest` run works around this by querying Google directly with
-`singleEvents=True`, which expands the series into occurrences, and filtering for
-those that carry a `recurringEventId`. It does not use or update sync tokens, so
-it cannot disturb the main sync loop.
+The `--daily_digest` run never opens the database. It queries Google directly for
+today with `singleEvents=True`, which expands each series into occurrences. It
+does not read or write sync tokens, so it cannot disturb the main sync loop.
 
 ## Requirements
 
@@ -161,8 +165,8 @@ Then add to crontab:
 0 9 * * * /usr/bin/python3 /path/to/calendar_bot.py --daily_digest >> /var/log/gcal-slack.log 2>&1
 ```
 
-The per-minute run does change detection and reminders. The morning run posts the
-recurring digest and exits without opening the database, so the two can safely
+The per-minute run does change detection and reminders. The morning run posts
+today's schedule and exits without opening the database, so the two can safely
 start in the same second.
 
 ### 4c. Run on Windows
@@ -195,7 +199,7 @@ run onward.
 --verbose                 print every event fetched from the API
 --dryrun                  do everything except send Slack messages
 --calendar_id ID          process only this calendar
---daily_digest            post today's digest and exit
+--daily_digest            post today's schedule as one message and exit
 --backfill_calendar_id    fill calendar_id on rows from an older schema; run once
 ```
 
