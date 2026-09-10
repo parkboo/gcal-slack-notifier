@@ -270,7 +270,7 @@ class CalendarBot():
             payload = {"text": msg}
             requests.post(self.config.webhook_url, json=payload)
 
-    def send_upcoming_events_to_slack(self, title, id, calendar_id, ts=None, text=None,
+    def send_upcoming_events_to_slack(self, title, id, calendar_id, ts,
                                       pretext=None, location=None):
         if pretext is None:
             pretext = self.msg['reminder_pretext'].format(minutes=self.config.reminder_minutes)
@@ -279,30 +279,33 @@ class CalendarBot():
         # Send without a link rather than building a wrong one.
         event_url = self.get_event_url(id, calendar_id) if calendar_id else None
 
-        # Push notifications do not render the <!date^...> token; they show it
-        # verbatim. The token is <!date^ts^format|fallback> and that fallback was
-        # left empty, so fill it, and give the attachment a fallback too.
-        when = (self.format_clock(datetime.fromtimestamp(ts, self.config.tz()))
-                if ts is not None else (text or ""))
-        if text is None:
-            # All-day events have no time, so callers pass text instead of ts
-            text = f"<!date^{ts}" + "^{date_num} {time_secs}|" + when + ">" if ts is not None else ""
-        text += self.format_location(location)
+        # Push notifications do not render the <!date^...> token, they show it
+        # verbatim. So use the same shape as send_message_to_slack: the display
+        # copy goes in blocks, and a plain-text version goes in the top-level
+        # text, which Slack shows only in the notification when blocks are
+        # present. Any URL in the location is stripped from that copy.
+        when = self.format_clock(datetime.fromtimestamp(ts, self.config.tz()))
+        # Text after the | is what Slack falls back to when it cannot render the date
+        shown_time = f"<!date^{ts}" + "^{date_num} {time_secs}|" + when + ">"
+        shown_title = f"*<{event_url}|{title}>*" if event_url else f"*{title}*"
 
-        attachment = {
-            "pretext": pretext,
-            "color": "#2eb886",
-            "title": title,
-            "text": text,
-            # Plain text for push notifications and previews; strip any location URL
-            "fallback": f"{pretext} {title} {when}{self.format_location(location, for_push=True)}".strip(),
+        payload = {
+            "text": f"{pretext} {title} {when}{self.format_location(location, for_push=True)}",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{pretext}\n{shown_title} {shown_time}{self.format_location(location)}"
+                    }
+                }
+            ]
         }
-        if event_url:
-            attachment["title_link"] = event_url
-        payload = {"attachments": [attachment]}
         print(payload)
 
-        requests.post(self.config.webhook_url, json=payload)
+        res = requests.post(self.config.webhook_url, json=payload)
+        if res.status_code != 200:
+            print(f"reminder failed to send: {res.status_code} {res.text}")
 
         if self.verbose:
             print(f"{pretext} {title} {event_url}")
