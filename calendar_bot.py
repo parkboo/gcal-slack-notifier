@@ -279,16 +279,23 @@ class CalendarBot():
         # Send without a link rather than building a wrong one.
         event_url = self.get_event_url(id, calendar_id) if calendar_id else None
 
+        # Push notifications do not render the <!date^...> token; they show it
+        # verbatim. The token is <!date^ts^format|fallback> and that fallback was
+        # left empty, so fill it, and give the attachment a fallback too.
+        when = (self.format_clock(datetime.fromtimestamp(ts, self.config.tz()))
+                if ts is not None else (text or ""))
         if text is None:
             # All-day events have no time, so callers pass text instead of ts
-            text = f"<!date^{ts}" + "^{date_num} {time_secs}| >" if ts is not None else ""
+            text = f"<!date^{ts}" + "^{date_num} {time_secs}|" + when + ">" if ts is not None else ""
         text += self.format_location(location)
 
         attachment = {
             "pretext": pretext,
             "color": "#2eb886",
             "title": title,
-            "text": text
+            "text": text,
+            # Plain text for push notifications and previews; strip any location URL
+            "fallback": f"{pretext} {title} {when}{self.format_location(location, for_push=True)}".strip(),
         }
         if event_url:
             attachment["title_link"] = event_url
