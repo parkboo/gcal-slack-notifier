@@ -286,7 +286,7 @@ class CalendarBot():
         # present. Any URL in the location is stripped from that copy.
         when = self.format_clock(datetime.fromtimestamp(ts, self.config.tz()))
         # Text after the | is what Slack falls back to when it cannot render the date
-        shown_time = f"<!date^{ts}" + "^{date_num} {time_secs}|" + when + ">"
+        shown_time = f"<!date^{ts}" + "^{date_num} {time}|" + when + ">"
         shown_title = f"*<{event_url}|{title}>*" if event_url else f"*{title}*"
 
         payload = {
